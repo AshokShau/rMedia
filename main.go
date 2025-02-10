@@ -30,7 +30,7 @@ func main() {
 
 	http.HandleFunc("/stream/", streamHandler)
 	log.Println("Server running on :80")
-	log.Fatal(http.ListenAndServe(":80", nil))
+	log.Fatal(http.ListenAndServe("0.0.0.0:80", nil))
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
