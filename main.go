@@ -34,6 +34,7 @@ func main() {
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("stream-request:", r.URL.Path)
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 3 {
 		http.Error(w, `{"error": "Invalid request"}`, http.StatusTeapot)
