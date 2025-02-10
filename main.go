@@ -121,7 +121,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 
 	finalData := data[trimStart:trimEnd]
 
-	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Content-Type", "video/x-matroska")
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.Itoa(len(finalData)))
 	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
