@@ -2,6 +2,7 @@ package utils
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -11,21 +12,15 @@ import (
 
 var senders = make(map[int][]*mtproto.MTProto)
 
-const CHUNK_SIZE = 1024 * 1024
-
-func GetFileChunks(c *tg.Client, file tg.MessageMedia, start, end int) ([]byte, error) {
-	chunk, _, err := DlChunk(c, file, start, end, CHUNK_SIZE)
-	return chunk, err
-}
-
-func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte, string, error) {
+func DlChunk(c *tg.Client, media any, start int, end int) ([]byte, int, int, error) {
+	chunkSize := 1024 * 1024
 	var buf []byte
-	input, dc, size, name, err := tg.GetFileLocation(media)
+	input, dc, size, _, err := tg.GetFileLocation(media)
 	if err != nil {
-		return nil, "", err
+		return nil, 0, 0, err
 	}
 	if chunkSize > 1048576 || chunkSize%1024 != 0 {
-		return nil, "", errors.New("in precise mode, chunk size must be <= 1 MB and divisible by 1 KB")
+		return nil, 0, 0, errors.New("in precise mode, chunk size must be <= 1 MB and divisible by 1 KB")
 	}
 
 	if end > int(size) {
@@ -50,7 +45,7 @@ func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte
 		}()
 
 		if err != nil {
-			return nil, "", err
+			return nil, 0, 0, err
 		}
 
 		if senders[int(dc)] == nil {
@@ -58,6 +53,8 @@ func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte
 		}
 		senders[int(dc)] = append(senders[int(dc)], sender)
 	}
+
+	startX, stopX := start, end
 
 	for i := start; i < end; i += chunkSize {
 		if i+chunkSize > int(size) {
@@ -69,7 +66,21 @@ func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte
 			offset = i - (i % 1024)
 		}
 
+		//offset / (1024 * 1024) == (offset + limit - 1) / (1024 * 1024).
+		// this equation should be true for all offsets and limits., check if it is true
+
+		if (offset / (1024 * 1024)) != ((offset + chunkSize - 1) / (1024 * 1024)) {
+			fmt.Println("offset:", offset, "chunkSize:", chunkSize)
+			fmt.Println("offset / (1024 * 1024):", offset/(1024*1024), "(offset + chunkSize - 1) / (1024 * 1024):", (offset+chunkSize-1)/(1024*1024))
+		}
+
+		if offset%1024 != 0 {
+			panic("offset not divisible by 1024")
+		}
+
 		log.Printf("STREAMER ---> Requesting chunk %d to %d from %d to %d of %d bytes\n", offset, offset+chunkSize, start, end, size)
+		startX = offset
+		stopX = offset + chunkSize
 
 		part, err := sender.MakeRequest(&tg.UploadGetFileParams{
 			Location:     input,
@@ -79,18 +90,20 @@ func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte
 			CdnSupported: false,
 		})
 
+		chunkSize = 1024 * 1024 // reset chunk size to 1 MB
+
 		if err != nil {
 			c.Log.Error(err)
-			return []byte{}, "", nil
+			return []byte{}, 0, 0, nil
 		}
 
 		switch v := part.(type) {
 		case *tg.UploadFileObj:
 			buf = append(buf, v.Bytes...)
 		case *tg.UploadFileCdnRedirect:
-			return nil, "", errors.New("cdn redirect not implemented")
+			return nil, 0, 0, errors.New("cdn redirect not implemented")
 		}
 	}
 
-	return buf, name, nil
+	return buf, startX, stopX, nil
 }

@@ -80,21 +80,12 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 		end = fileSize - 1
 	}
 
-	// offset := start - (start % maxChunkSize)
-	// firstPartCut := start - offset
-	// lastPartCut := end%maxChunkSize + 1
-
-	// reqLength := end - start + 1
-	// partCount := math.Ceil(float64(end)/float64(maxChunkSize)) - math.Floor(float64(offset)/float64(maxChunkSize))
-
-	// log.Println("offset:", offset, "firstPartCut:", firstPartCut, "lastPartCut:", lastPartCut, "partCount:", partCount, "reqLength:", reqLength)
-
 	if start > end {
 		http.Error(w, `{"error": "Invalid range"}`, http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
 
-	data, err := utils.GetFileChunks(client, fi, start, end)
+	data, realStart, realEnd, err := utils.DlChunk(client, fi, start, end)
 	if err != nil {
 		http.Error(w, `{"error": "Error fetching file chunks"}`, http.StatusInternalServerError)
 		return
@@ -103,7 +94,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "video/x-matroska")
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, start+len(data)-1, fileSize))
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", realStart, realEnd, fileSize))
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusPartialContent)
