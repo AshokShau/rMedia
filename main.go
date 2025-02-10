@@ -34,7 +34,7 @@ func main() {
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("stream-request:", r.URL.Path, r.Header.Get("Range"))
+	//log.Println("stream-request:", r.URL.Path, r.Header.Get("Range"))
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 3 {
 		http.Error(w, `{"error": "Invalid request"}`, http.StatusTeapot)
@@ -49,7 +49,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileSize := int(fi.(*tg.MessageMediaDocument).Document.(*tg.DocumentObj).Size)
-	const maxChunkSize = 1024 * 1024 * 8
+	const maxChunkSize = 1024 * 1024
 
 	var start, end int
 
@@ -73,60 +73,39 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		start = 0
-		end = maxChunkSize - 1
+		end = fileSize - 1
 	}
 
 	if end >= fileSize {
 		end = fileSize - 1
 	}
 
+	// offset := start - (start % maxChunkSize)
+	// firstPartCut := start - offset
+	// lastPartCut := end%maxChunkSize + 1
+
+	// reqLength := end - start + 1
+	// partCount := math.Ceil(float64(end)/float64(maxChunkSize)) - math.Floor(float64(offset)/float64(maxChunkSize))
+
+	// log.Println("offset:", offset, "firstPartCut:", firstPartCut, "lastPartCut:", lastPartCut, "partCount:", partCount, "reqLength:", reqLength)
+
 	if start > end {
 		http.Error(w, `{"error": "Invalid range"}`, http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
 
-	alignedStart := (start / 1024) * 1024
-	chunkSize := end - alignedStart + 1
-
-	if chunkSize > maxChunkSize {
-		chunkSize = maxChunkSize
-	}
-
-	if chunkSize%1024 != 0 {
-		chunkSize -= (chunkSize % 1024)
-	}
-
-	if chunkSize <= 0 {
-		http.Error(w, `{"error": "Invalid chunk size"}`, http.StatusRequestedRangeNotSatisfiable)
-		return
-	}
-
-	data, err := utils.GetFileChunks(client, fi, alignedStart, chunkSize)
+	data, err := utils.GetFileChunks(client, fi, start, end)
 	if err != nil {
 		http.Error(w, `{"error": "Error fetching file chunks"}`, http.StatusInternalServerError)
 		return
 	}
 
-	if len(data) < (start - alignedStart) {
-		http.Error(w, `{"error": "Unexpected data size"}`, http.StatusInternalServerError)
-		return
-	}
-
-	trimStart := start - alignedStart
-	trimEnd := trimStart + (end - start + 1)
-
-	if trimEnd > len(data) {
-		trimEnd = len(data)
-	}
-
-	finalData := data[trimStart:trimEnd]
-
 	w.Header().Set("Content-Type", "video/x-matroska")
 	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("Content-Length", strconv.Itoa(len(finalData)))
-	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, start+len(data)-1, fileSize))
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusPartialContent)
-	w.Write(finalData)
+	w.Write(data)
 }

@@ -2,7 +2,7 @@ package utils
 
 import (
 	"errors"
-	"fmt"
+	"log"
 	"time"
 
 	mtproto "github.com/amarnathcjd/gogram"
@@ -13,8 +13,8 @@ var senders = make(map[int][]*mtproto.MTProto)
 
 const CHUNK_SIZE = 1024 * 1024
 
-func GetFileChunks(c *tg.Client, file tg.MessageMedia, offset, limit int) ([]byte, error) {
-	chunk, _, err := downloadChunk(c, file, offset, offset+limit, CHUNK_SIZE)
+func GetFileChunks(c *tg.Client, file tg.MessageMedia, start, end int) ([]byte, error) {
+	chunk, _, err := DlChunk(c, file, start, end, CHUNK_SIZE)
 	return chunk, err
 }
 
@@ -24,14 +24,14 @@ func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte
 	if err != nil {
 		return nil, "", err
 	}
-
-	if chunkSize > 1048576 || (1048576%chunkSize) != 0 {
-		return nil, "", errors.New("chunk size must be a multiple of 1048576 (1MB)")
+	if chunkSize > 1048576 || chunkSize%1024 != 0 {
+		return nil, "", errors.New("in precise mode, chunk size must be <= 1 MB and divisible by 1 KB")
 	}
 
 	if end > int(size) {
 		end = int(size)
 	}
+
 	var sender *mtproto.MTProto
 	for _, s := range senders[int(dc)] {
 		if s != nil {
@@ -43,7 +43,7 @@ func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte
 	if sender == nil {
 		sender, err = c.CreateExportedSender(int(dc), false)
 		go func() {
-			for { // keep connection alive
+			for {
 				time.Sleep(30 * time.Second)
 				sender.Ping()
 			}
@@ -59,92 +59,29 @@ func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte
 		senders[int(dc)] = append(senders[int(dc)], sender)
 	}
 
-	for curr := start; curr < end; curr += chunkSize {
+	for i := start; i < end; i += chunkSize {
+		if i+chunkSize > int(size) {
+			chunkSize = int(size) - i
+		}
+
+		offset := i
+		if offset%1024 != 0 {
+			offset = i - (i % 1024)
+		}
+
+		log.Printf("STREAMER ---> Requesting chunk %d to %d from %d to %d of %d bytes\n", offset, offset+chunkSize, start, end, size)
+
 		part, err := sender.MakeRequest(&tg.UploadGetFileParams{
 			Location:     input,
 			Limit:        int32(chunkSize),
-			Offset:       int64(curr),
-			CdnSupported: false,
-		})
-
-		if err != nil {
-			c.Log.Error(err)
-		}
-
-		switch v := part.(type) {
-		case *tg.UploadFileObj:
-			buf = append(buf, v.Bytes...)
-		case *tg.UploadFileCdnRedirect:
-			return nil, "", errors.New("cdn redirect not implemented")
-		}
-	}
-
-	return buf, name, nil
-}
-
-func downloadChunk(c *tg.Client, media tg.MessageMedia, start, end, chunkSize int) ([]byte, string, error) {
-	var buf []byte
-	input, dc, size, name, err := tg.GetFileLocation(media)
-	if err != nil {
-		return nil, "", err
-	}
-
-	if (1048576 % chunkSize) != 0 {
-		fmt.Println("chunk size must be a multiple of 1048576 (1MB)")
-		return nil, "", errors.New("chunk size must be a multiple of 1048576 (1MB)")
-	}
-
-	if end > int(size) {
-		end = int(size)
-	}
-
-	// if chunkSize > 1048576 {
-	// 	chunkSize = 1048576
-	// }
-
-	var sender *mtproto.MTProto
-	for _, s := range senders[int(dc)] {
-		if s != nil {
-			sender = s
-			break
-		}
-	}
-
-	if sender == nil {
-		sender, err = c.CreateExportedSender(int(dc), false)
-		go func() {
-			for { // keep connection alive
-				time.Sleep(30 * time.Second)
-				sender.Ping()
-			}
-		}()
-
-		if err != nil {
-			return nil, "", err
-		}
-
-		if senders[int(dc)] == nil {
-			senders[int(dc)] = make([]*mtproto.MTProto, 0)
-		}
-		senders[int(dc)] = append(senders[int(dc)], sender)
-	}
-
-	startAligned := (start / chunkSize) * chunkSize
-	for curr := startAligned; curr < end; curr += chunkSize {
-		if curr+chunkSize > end {
-			chunkSize = end - curr
-		}
-		part, err := sender.MakeRequest(&tg.UploadGetFileParams{
-			Location:     input,
-			Limit:        int32(chunkSize),
-			Offset:       int64(curr),
+			Offset:       int64(offset),
 			Precise:      true,
 			CdnSupported: false,
 		})
 
 		if err != nil {
 			c.Log.Error(err)
-			continue
+			return []byte{}, "", nil
 		}
 
 		switch v := part.(type) {
