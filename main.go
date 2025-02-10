@@ -29,8 +29,8 @@ func main() {
 	client.AddMessageHandler("/fid", utils.GetBotFileID)
 
 	http.HandleFunc("/stream/", streamHandler)
-	log.Println("Server running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Println("Server running on :80")
+	log.Fatal(http.ListenAndServe(":80", nil))
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
