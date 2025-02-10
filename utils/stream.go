@@ -18,6 +18,70 @@ func GetFileChunks(c *tg.Client, file tg.MessageMedia, offset, limit int) ([]byt
 	return chunk, err
 }
 
+func DlChunk(c *tg.Client, media any, start int, end int, chunkSize int) ([]byte, string, error) {
+	var buf []byte
+	input, dc, size, name, err := tg.GetFileLocation(media)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if chunkSize > 1048576 || (1048576%chunkSize) != 0 {
+		return nil, "", errors.New("chunk size must be a multiple of 1048576 (1MB)")
+	}
+
+	if end > int(size) {
+		end = int(size)
+	}
+	var sender *mtproto.MTProto
+	for _, s := range senders[int(dc)] {
+		if s != nil {
+			sender = s
+			break
+		}
+	}
+
+	if sender == nil {
+		sender, err = c.CreateExportedSender(int(dc), false)
+		go func() {
+			for { // keep connection alive
+				time.Sleep(30 * time.Second)
+				sender.Ping()
+			}
+		}()
+
+		if err != nil {
+			return nil, "", err
+		}
+
+		if senders[int(dc)] == nil {
+			senders[int(dc)] = make([]*mtproto.MTProto, 0)
+		}
+		senders[int(dc)] = append(senders[int(dc)], sender)
+	}
+
+	for curr := start; curr < end; curr += chunkSize {
+		part, err := sender.MakeRequest(&tg.UploadGetFileParams{
+			Location:     input,
+			Limit:        int32(chunkSize),
+			Offset:       int64(curr),
+			CdnSupported: false,
+		})
+
+		if err != nil {
+			c.Log.Error(err)
+		}
+
+		switch v := part.(type) {
+		case *tg.UploadFileObj:
+			buf = append(buf, v.Bytes...)
+		case *tg.UploadFileCdnRedirect:
+			return nil, "", errors.New("cdn redirect not implemented")
+		}
+	}
+
+	return buf, name, nil
+}
+
 func downloadChunk(c *tg.Client, media tg.MessageMedia, start, end, chunkSize int) ([]byte, string, error) {
 	var buf []byte
 	input, dc, size, name, err := tg.GetFileLocation(media)

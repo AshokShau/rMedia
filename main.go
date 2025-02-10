@@ -34,7 +34,7 @@ func main() {
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("stream-request:", r.URL.Path)
+	log.Println("stream-request:", r.URL.Path, r.Header.Get("Range"))
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 3 {
 		http.Error(w, `{"error": "Invalid request"}`, http.StatusTeapot)
@@ -125,6 +125,8 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.Itoa(len(finalData)))
 	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusPartialContent)
 	w.Write(finalData)
 }
