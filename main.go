@@ -1,25 +1,29 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"log"
 	"main/utils"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	mtproto "github.com/amarnathcjd/gogram"
 	tg "github.com/amarnathcjd/gogram/telegram"
-	"github.com/joho/godotenv"
+	_ "github.com/joho/godotenv/autoload"
 )
 
+const maxFullDownloadSize = 50 * 1024 * 1024 // 50MB
+
 var client *tg.Client
+var senders = make(map[int][]*mtproto.MTProto)
 
 func main() {
-	godotenv.Load()
 	client, _ = tg.NewClient(tg.ClientConfig{
-		AppID:    2040,
-		AppHash:  os.Getenv("APP_HASH"),
+		AppID:    6,
+		AppHash:  "eb06d4abfb49dc3eeb1aeb98ae0f581e",
 		LogLevel: tg.LogInfo,
 	})
 
@@ -27,19 +31,23 @@ func main() {
 	client.LoginBot(os.Getenv("BOT_TOKEN"))
 
 	client.AddMessageHandler("/fid", utils.GetBotFileID)
-
 	http.HandleFunc("/stream/", streamHandler)
-	log.Println("Server running on :80")
-	log.Fatal(http.ListenAndServe("0.0.0.0:80", nil))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3010"
+	}
+
+	log.Printf("Server running on http://localhost:%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
-	//log.Println("stream-request:", r.URL.Path, r.Header.Get("Range"))
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 3 {
-		http.Error(w, `{"error": "Invalid request"}`, http.StatusTeapot)
+		http.Error(w, `{"error": "Invalid request"}`, http.StatusBadRequest)
 		return
 	}
+
 	fileID := parts[2]
 
 	fi, err := utils.ResolveBotFileID(fileID)
@@ -49,54 +57,98 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileSize := int(fi.(*tg.MessageMediaDocument).Document.(*tg.DocumentObj).Size)
-	const maxChunkSize = 1024 * 1024
-
-	var start, end int
-
-	rangeHeader := r.Header.Get("Range")
-	if rangeHeader != "" && strings.HasPrefix(rangeHeader, "bytes=") {
-		rangeVal := strings.TrimPrefix(rangeHeader, "bytes=")
-		ranges := strings.Split(rangeVal, "-")
-
-		if len(ranges) > 0 && ranges[0] != "" {
-			if s, e := strconv.Atoi(ranges[0]); e == nil {
-				start = s
-			}
-		}
-
-		if len(ranges) > 1 && ranges[1] != "" {
-			if e, e2 := strconv.Atoi(ranges[1]); e2 == nil {
-				end = e
-			}
-		} else {
-			end = start + maxChunkSize - 1
-		}
-	} else {
-		start = 0
-		end = fileSize - 1
-	}
-
-	if end >= fileSize {
-		end = fileSize - 1
-	}
-
-	if start > end {
-		http.Error(w, `{"error": "Invalid range"}`, http.StatusRequestedRangeNotSatisfiable)
+	if fileSize > maxFullDownloadSize {
+		http.Error(w, `{"error": "File is larger than 50MB, cannot be streamed"}`, http.StatusForbidden)
 		return
 	}
 
-	data, realStart, realEnd, err := utils.DlChunk(client, fi, start, end)
+	data, err := DlFullFile(client, fi)
 	if err != nil {
-		http.Error(w, `{"error": "Error fetching file chunks"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error": "Error fetching full file"}`, http.StatusInternalServerError)
 		return
 	}
 
+	// w.Header().Set("Content-Type", "audio/mpeg")
 	w.Header().Set("Content-Type", "video/x-matroska")
-	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", realStart, realEnd, fileSize))
-	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.WriteHeader(http.StatusPartialContent)
+	w.WriteHeader(http.StatusOK)
 	w.Write(data)
+}
+
+func DlFullFile(c *tg.Client, media any) ([]byte, error) {
+	chunkSize := 1024 * 1024 // 1MB
+	var buf []byte
+
+	input, dc, size, _, err := tg.GetFileLocation(media)
+	if err != nil {
+		return nil, err
+	}
+
+	sender := getSender(c, int(dc))
+	if sender == nil {
+		return nil, errors.New("failed to get sender")
+	}
+
+	log.Printf("STREAMER ---> Downloading full file in chunks (size: %d bytes)\n", size)
+
+	for offset := 0; offset < int(size); offset += chunkSize {
+		if offset+chunkSize > int(size) {
+			chunkSize = int(size) - offset
+			if chunkSize%1024 != 0 {
+				chunkSize += 1024 - (chunkSize % 1024)
+			}
+		}
+
+		if offset%1024 != 0 {
+			offset -= offset % 1024
+		}
+
+		log.Printf("STREAMER ---> Requesting full file chunk: %d-%d\n", offset, offset+chunkSize)
+
+		part, err := sender.MakeRequest(&tg.UploadGetFileParams{
+			Location:     input,
+			Limit:        int32(chunkSize),
+			Offset:       int64(offset),
+			Precise:      true,
+			CdnSupported: false,
+		})
+
+		if err != nil {
+			log.Printf("STREAMER ---> Full file chunk request failed: %s\n", err)
+			return nil, err
+		}
+
+		switch v := part.(type) {
+		case *tg.UploadFileObj:
+			buf = append(buf, v.Bytes...)
+		case *tg.UploadFileCdnRedirect:
+			return nil, errors.New("cdn redirect not implemented")
+		}
+	}
+
+	return buf, nil
+}
+
+func getSender(c *tg.Client, dc int) *mtproto.MTProto {
+	if len(senders[dc]) > 0 && senders[dc][0] != nil {
+		return senders[dc][0]
+	}
+
+	sender, err := c.CreateExportedSender(dc, false)
+	if err != nil {
+		log.Printf("Failed to create sender for DC %d: %v", dc, err)
+		return nil
+	}
+
+	senders[dc] = append(senders[dc], sender)
+
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			sender.Ping()
+		}
+	}()
+
+	return sender
 }
